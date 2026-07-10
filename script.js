@@ -1,103 +1,230 @@
-// 导航栏滚动效果
-const navbar = document.querySelector('.navbar');
-window.addEventListener('scroll', () => {
-    if (window.scrollY > 50) {
-        navbar.classList.add('scrolled');
-    } else {
-        navbar.classList.remove('scrolled');
-    }
+const menuButton = document.querySelector('.menu-button');
+const menu = document.querySelector('.site-header nav');
+
+menuButton.addEventListener('click', () => {
+  const open = menuButton.classList.toggle('open');
+  menu.classList.toggle('open', open);
+  menuButton.setAttribute('aria-expanded', String(open));
 });
 
-// 移动端导航菜单切换
-const navToggle = document.querySelector('.nav-toggle');
-const navMenu = document.querySelector('.nav-menu');
-
-navToggle.addEventListener('click', () => {
-    navMenu.classList.toggle('active');
+menu.querySelectorAll('a').forEach(link => {
+  link.addEventListener('click', () => {
+    menuButton.classList.remove('open');
+    menu.classList.remove('open');
+    menuButton.setAttribute('aria-expanded', 'false');
+  });
 });
 
-// 点击导航链接后关闭菜单
-document.querySelectorAll('.nav-menu a').forEach(link => {
-    link.addEventListener('click', () => {
-        navMenu.classList.remove('active');
-    });
-});
+const revealObserver = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (!entry.isIntersecting) return;
+    entry.target.classList.add('visible');
+    revealObserver.unobserve(entry.target);
+  });
+}, { threshold: .12, rootMargin: '0px 0px -35px' });
 
-// 滚动动画 - 元素进入视口时淡入
-const observerOptions = {
-    threshold: 0.15,
-    rootMargin: '0px 0px -50px 0px'
+document.querySelectorAll('.reveal').forEach(element => revealObserver.observe(element));
+
+const canvas = document.querySelector('#watercolor-world');
+const context = canvas.getContext('2d');
+const sources = [
+  { key: 'tree', url: 'assets/tree.png' },
+  { key: 'village', url: 'assets/village.png' },
+  { key: 'bridge', url: 'assets/bridge.png' }
+];
+
+const artwork = new Map();
+let width = window.innerWidth;
+let height = window.innerHeight;
+let ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+let scrollTarget = window.scrollY;
+let scrollCurrent = window.scrollY;
+let previousScroll = scrollCurrent;
+let pointerTarget = { x: .5, y: .5 };
+let pointerCurrent = { x: .5, y: .5 };
+let ready = false;
+const brushCursor = document.createElement('div');
+brushCursor.className = 'brush-cursor';
+document.body.appendChild(brushCursor);
+
+const clamp = (value, min = 0, max = 1) => Math.min(Math.max(value, min), max);
+const smoothstep = (start, end, value) => {
+  const amount = clamp((value - start) / (end - start));
+  return amount * amount * (3 - 2 * amount);
 };
 
-const observer = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-        if (entry.isIntersecting) {
-            entry.target.style.opacity = '1';
-            entry.target.style.transform = 'translateY(0)';
-        }
+const loadImage = url => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.addEventListener('load', () => resolve(image));
+  image.addEventListener('error', reject);
+  image.src = url;
+});
+
+// 去掉每张原图自带的纸张底色，只保留真实的水彩颜料。
+const makeTransparentArtwork = image => {
+  const layer = document.createElement('canvas');
+  layer.width = image.naturalWidth;
+  layer.height = image.naturalHeight;
+  const layerContext = layer.getContext('2d', { willReadFrequently: true });
+  layerContext.drawImage(image, 0, 0);
+
+  const pixels = layerContext.getImageData(0, 0, layer.width, layer.height);
+  const data = pixels.data;
+  const cornerPoints = [
+    0,
+    (layer.width - 1) * 4,
+    (layer.width * (layer.height - 1)) * 4,
+    (layer.width * layer.height - 1) * 4
+  ];
+  const paper = cornerPoints.reduce((sum, index) => ({
+    r: sum.r + data[index],
+    g: sum.g + data[index + 1],
+    b: sum.b + data[index + 2]
+  }), { r: 0, g: 0, b: 0 });
+  paper.r /= cornerPoints.length;
+  paper.g /= cornerPoints.length;
+  paper.b /= cornerPoints.length;
+
+  for (let index = 0; index < data.length; index += 4) {
+    const red = data[index] - paper.r;
+    const green = data[index + 1] - paper.g;
+    const blue = data[index + 2] - paper.b;
+    const distance = Math.sqrt(red * red + green * green + blue * blue);
+    const pigment = Math.pow(clamp((distance - 4) / 34), .72);
+    data[index + 3] = Math.round(data[index + 3] * pigment);
+  }
+
+  layerContext.putImageData(pixels, 0, 0);
+  return layer;
+};
+
+const resizeCanvas = () => {
+  width = window.innerWidth;
+  height = window.innerHeight;
+  ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+};
+
+const drawArtwork = (image, options) => {
+  const {
+    x,
+    y,
+    drawWidth,
+    opacity = 1,
+    rotation = 0,
+    pivotX = .5,
+    pivotY = .5
+  } = options;
+  const drawHeight = drawWidth * image.height / image.width;
+  const pivot = {
+    x: x + drawWidth * pivotX,
+    y: y + drawHeight * pivotY
+  };
+
+  context.save();
+  context.translate(pivot.x, pivot.y);
+  context.rotate(rotation);
+  context.translate(-pivot.x, -pivot.y);
+  context.globalAlpha = opacity;
+  context.globalCompositeOperation = 'multiply';
+  context.drawImage(image, x, y, drawWidth, drawHeight);
+  context.restore();
+};
+
+const renderWorld = time => {
+  scrollCurrent += (scrollTarget - scrollCurrent) * .075;
+  pointerCurrent.x += (pointerTarget.x - pointerCurrent.x) * .045;
+  pointerCurrent.y += (pointerTarget.y - pointerCurrent.y) * .045;
+
+  const scrollVelocity = scrollCurrent - previousScroll;
+  previousScroll = scrollCurrent;
+  const maxScroll = Math.max(document.documentElement.scrollHeight - height, 1);
+  const progress = clamp(scrollCurrent / maxScroll);
+  const pointerX = (pointerCurrent.x - .5) * 25;
+  const pointerY = (pointerCurrent.y - .5) * 14;
+
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  if (ready) {
+    const mobile = width < 700;
+    const treeWidth = mobile ? width * 1.48 : width * .92;
+    const villageWidth = mobile ? width * 1.58 : width * .98;
+    const bridgeWidth = mobile ? width * 1.7 : width * 1.08;
+    const treeOpacity = 1 - smoothstep(.18, .43, progress);
+    const villageOpacity =
+      smoothstep(.1, .28, progress) *
+      (1 - smoothstep(.56, .78, progress));
+    const bridgeOpacity = smoothstep(.48, .7, progress);
+    const villageJourney = clamp((progress - .1) / .64);
+    const bridgeJourney = clamp((progress - .48) / .52);
+    const treeSway = (
+      (pointerCurrent.x - .5) * .012 +
+      clamp(scrollVelocity * .00038, -.013, .013) +
+      Math.sin(time * .0007) * .0018
+    );
+
+    drawArtwork(artwork.get('tree'), {
+      x: width * .035 + pointerX * .72,
+      y: height * .12 - progress * height * .72 + pointerY * .35,
+      drawWidth: treeWidth,
+      opacity: treeOpacity * .94,
+      rotation: treeSway,
+      pivotX: .63,
+      pivotY: .83
     });
-}, observerOptions);
 
-// 观察需要动画的元素
-document.querySelectorAll('.skill-card, .project-card, .blog-card, .about-text, .contact-form, .contact-item').forEach(el => {
-    el.style.opacity = '0';
-    el.style.transform = 'translateY(30px)';
-    el.style.transition = 'opacity 0.6s ease-out, transform 0.6s ease-out';
-    observer.observe(el);
-});
-
-// 技能进度条动画
-const skillBars = document.querySelectorAll('.skill-progress');
-const skillObserver = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-        if (entry.isIntersecting) {
-            const targetWidth = entry.target.style.width;
-            entry.target.style.width = '0%';
-            setTimeout(() => {
-                entry.target.style.width = targetWidth;
-            }, 100);
-            skillObserver.unobserve(entry.target);
-        }
+    drawArtwork(artwork.get('village'), {
+      x: -width * .08 + pointerX * .28,
+      y: height * .58 - villageJourney * height * .52 - pointerY * .12,
+      drawWidth: villageWidth,
+      opacity: villageOpacity * .88,
+      rotation: (pointerCurrent.x - .5) * -.0015,
+      pivotX: .5,
+      pivotY: .72
     });
-}, { threshold: 0.5 });
 
-skillBars.forEach(bar => {
-    skillObserver.observe(bar);
-});
-
-// 联系表单提交
-const contactForm = document.querySelector('.contact-form');
-contactForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const btn = contactForm.querySelector('.btn');
-    const originalText = btn.textContent;
-    btn.textContent = '发送中...';
-    btn.disabled = true;
-
-    setTimeout(() => {
-        btn.textContent = '消息已发送 ✓';
-        btn.style.background = 'linear-gradient(135deg, #4CAF50, #66BB6A)';
-        contactForm.reset();
-
-        setTimeout(() => {
-            btn.textContent = originalText;
-            btn.style.background = '';
-            btn.disabled = false;
-        }, 2500);
-    }, 1200);
-});
-
-// 平滑滚动（针对不支持 scroll-behavior 的浏览器）
-document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-    anchor.addEventListener('click', function(e) {
-        const targetId = this.getAttribute('href');
-        if (targetId === '#') return;
-        const target = document.querySelector(targetId);
-        if (target) {
-            e.preventDefault();
-            target.scrollIntoView({ behavior: 'smooth' });
-        }
+    drawArtwork(artwork.get('bridge'), {
+      x: -width * .04 + pointerX * .12,
+      y: height * .62 - bridgeJourney * height * .45 + pointerY * .08,
+      drawWidth: bridgeWidth,
+      opacity: bridgeOpacity * .82,
+      rotation: 0
     });
+  }
+
+  brushCursor.style.transform =
+    `translate3d(${pointerCurrent.x * width}px, ${pointerCurrent.y * height}px, 0) rotate(-18deg)`;
+  requestAnimationFrame(renderWorld);
+};
+
+Promise.all(sources.map(async source => {
+  const image = await loadImage(source.url);
+  artwork.set(source.key, makeTransparentArtwork(image));
+})).then(() => {
+  ready = true;
 });
 
-console.log('✨ 圆子的个人网站已就绪！欢迎来访~');
+window.addEventListener('scroll', () => {
+  scrollTarget = window.scrollY;
+}, { passive: true });
+
+window.addEventListener('pointermove', event => {
+  pointerTarget = {
+    x: clamp(event.clientX / width),
+    y: clamp(event.clientY / height)
+  };
+  brushCursor.classList.add('visible');
+}, { passive: true });
+
+document.documentElement.addEventListener('mouseleave', () => {
+  pointerTarget = { x: .5, y: .5 };
+  brushCursor.classList.remove('visible');
+});
+
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+requestAnimationFrame(renderWorld);
